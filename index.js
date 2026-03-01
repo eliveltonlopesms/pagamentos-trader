@@ -1,45 +1,72 @@
 const express = require('express');
-const mercadopago = require('mercadopago');
-const cors = require('cors');
+const cors = require('cors'); // <--- ESSENCIAL PARA CORRIGIR O ERRO
+const axios = require('axios');
+const admin = require('firebase-admin');
+
 const app = express();
 
+// Ativa a permissão para o seu site acessar o servidor
+app.use(cors()); 
 app.use(express.json());
-app.use(cors());
 
-// Seu Access Token do Mercado Pago
-mercadopago.configurations.setAccessToken("APP_USR-7479697238733634-030102-44c336d210a04cb97d3fef3d5b4cf647-3234523393");
+// CONFIGURAÇÃO DO FIREBASE (Coloque suas credenciais aqui)
+const serviceAccount = require("./sua-chave-firebase.json");
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://trader-master-81f62-default-rtdb.firebaseio.com"
+});
 
+const db = admin.database();
+
+// ROTA PARA CRIAR O PIX
 app.post('/criar-pix', async (req, res) => {
-    const { valor, email, uid } = req.body;
+  const { valor, email, uid } = req.body;
+
+  try {
+    const response = await axios.post('https://api.mercadopago.com/v1/payments', {
+      transaction_amount: parseFloat(valor),
+      description: `Deposito Trader Master - ${email}`,
+      payment_method_id: 'pix',
+      notification_url: "https://pagamentos-trader.onrender.com/webhook", // Seu link do Render
+      payer: {
+        email: email,
+        first_name: 'Usuario',
+        last_name: 'Master'
+      }
+    }, {
+      headers: {
+        'Authorization': `Bearer SEU_ACCESS_TOKEN_DO_MERCADO_PAGO`,
+        'X-Idempotency-Key': Date.now().toString()
+      }
+    });
+
+    const data = response.data;
+
+    // Retorna para o seu index.html as informações do PIX
+    res.json({
+      qr_code_base64: data.point_of_interaction.transaction_data.qr_code_base64,
+      copy_paste: data.point_of_interaction.transaction_data.qr_code
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro ao gerar PIX" });
+  }
+});
+
+// WEBHOOK (Avisa o Firebase quando o aluno paga)
+app.post('/webhook', async (req, res) => {
+    const { data } = req.body;
     
-    const payment_data = {
-        transaction_amount: Number(valor),
-        description: 'Deposito Trader Master',
-        payment_method_id: 'pix',
-        payer: {
-            email: email,
-            first_name: 'Cliente',
-            last_name: 'Trader Master'
-        },
-        external_reference: uid // Importante para identificar quem pagou no Firebase depois
-    };
-
-    try {
-        const response = await mercadopago.payment.create(payment_data);
-        res.json({
-            copy_paste: response.body.point_of_interaction.transaction_data.qr_code,
-            qr_code_base64: response.body.point_of_interaction.transaction_data.qr_code_base64
-        });
-    } catch (error) {
-        console.error("Erro no Mercado Pago:", error);
-        res.status(500).json({ error: error.message });
+    if (req.query.type === 'payment') {
+        const paymentId = data.id;
+        // Aqui você verifica se o pagamento foi aprovado no Mercado Pago
+        // E atualiza o saldo no Firebase usando o UID que salvamos
+        // db.ref('usuarios/' + uid).update({ saldo: novoSaldo });
     }
+    res.sendStatus(200);
 });
 
-// Rota para testar se o servidor está online
-app.get('/', (req, res) => {
-    res.send('Servidor Trader Master Online!');
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Servidor rodando e com CORS liberado!");
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
